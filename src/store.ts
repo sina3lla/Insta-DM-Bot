@@ -12,6 +12,10 @@ type ProcessedRecord = {
 
 type StoreFile = {
   comments: Record<string, ProcessedRecord>;
+  actions?: Record<string, ProcessedRecord>;
+  counters?: Record<string, number>;
+  senderTemplates?: Record<string, string[]>;
+  senderRuleLastSentAt?: Record<string, string>;
 };
 
 export class FileStore {
@@ -53,6 +57,99 @@ export class FileStore {
       };
       await this.flush();
       return true;
+    });
+  }
+
+  async claimAction(actionKey: string, metadata?: { mediaId?: string; keyword?: string }): Promise<boolean> {
+    return this.withLock(async () => {
+      this.data.actions ??= {};
+      const existing = this.data.actions[actionKey];
+      if (existing?.status === "sent" || existing?.status === "processing") {
+        return false;
+      }
+
+      this.data.actions[actionKey] = {
+        status: "processing",
+        mediaId: metadata?.mediaId,
+        keyword: metadata?.keyword,
+        updatedAt: new Date().toISOString()
+      };
+      await this.flush();
+      return true;
+    });
+  }
+
+  async markActionSent(actionKey: string): Promise<void> {
+    await this.withLock(async () => {
+      this.data.actions ??= {};
+      const existing = this.data.actions[actionKey];
+      this.data.actions[actionKey] = {
+        ...existing,
+        status: "sent",
+        updatedAt: new Date().toISOString()
+      };
+      await this.flush();
+    });
+  }
+
+  async markActionFailed(actionKey: string, errorMessage: string): Promise<void> {
+    await this.withLock(async () => {
+      this.data.actions ??= {};
+      const existing = this.data.actions[actionKey];
+      this.data.actions[actionKey] = {
+        ...existing,
+        status: "failed",
+        error: errorMessage,
+        updatedAt: new Date().toISOString()
+      };
+      await this.flush();
+    });
+  }
+
+  async getCounter(counterKey: string): Promise<number> {
+    return this.withLock(async () => {
+      this.data.counters ??= {};
+      return this.data.counters[counterKey] ?? 0;
+    });
+  }
+
+  async incrementCounter(counterKey: string): Promise<void> {
+    await this.withLock(async () => {
+      this.data.counters ??= {};
+      this.data.counters[counterKey] = (this.data.counters[counterKey] ?? 0) + 1;
+      await this.flush();
+    });
+  }
+
+  async getSenderTemplateHistory(senderId: string, ruleId: string): Promise<string[]> {
+    return this.withLock(async () => {
+      this.data.senderTemplates ??= {};
+      return this.data.senderTemplates[`${senderId}:${ruleId}`] ?? [];
+    });
+  }
+
+  async rememberSenderTemplate(senderId: string, ruleId: string, template: string): Promise<void> {
+    await this.withLock(async () => {
+      this.data.senderTemplates ??= {};
+      const key = `${senderId}:${ruleId}`;
+      const existing = this.data.senderTemplates[key] ?? [];
+      this.data.senderTemplates[key] = [...existing, template];
+      await this.flush();
+    });
+  }
+
+  async getSenderRuleLastSentAt(senderId: string, ruleId: string): Promise<string | undefined> {
+    return this.withLock(async () => {
+      this.data.senderRuleLastSentAt ??= {};
+      return this.data.senderRuleLastSentAt[`${senderId}:${ruleId}`];
+    });
+  }
+
+  async rememberSenderRuleSent(senderId: string, ruleId: string): Promise<void> {
+    await this.withLock(async () => {
+      this.data.senderRuleLastSentAt ??= {};
+      this.data.senderRuleLastSentAt[`${senderId}:${ruleId}`] = new Date().toISOString();
+      await this.flush();
     });
   }
 

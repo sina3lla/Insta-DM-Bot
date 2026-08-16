@@ -2,7 +2,8 @@ import type {
   CommentEvent,
   InstagramCommentWebhookValue,
   InstagramWebhookEntry,
-  InstagramWebhookPayload
+  InstagramWebhookPayload,
+  MessageEvent
 } from "./types.js";
 
 function toCommentEvent(
@@ -40,6 +41,32 @@ export function extractCommentEvents(payload: InstagramWebhookPayload): CommentE
 
       const event = toCommentEvent(entry, change.value);
       if (event) events.push(event);
+    }
+  }
+
+  return events;
+}
+
+export function extractMessageEvents(payload: InstagramWebhookPayload): MessageEvent[] {
+  const events: MessageEvent[] = [];
+
+  for (const entry of payload.entry ?? []) {
+    for (const item of entry.messaging ?? []) {
+      const senderId = item.sender?.id;
+      const messageId = item.message?.mid ?? item.postback?.mid;
+      const messageText = item.message?.text ?? item.postback?.payload ?? item.postback?.title;
+
+      if (!senderId || !messageId || typeof messageText !== "string") continue;
+      if (item.message?.is_echo || item.message?.is_deleted || item.message?.is_unsupported) continue;
+
+      events.push({
+        igUserIdFromWebhook: entry.id,
+        senderId,
+        recipientId: item.recipient?.id,
+        messageId,
+        messageText,
+        timestamp: item.timestamp
+      });
     }
   }
 

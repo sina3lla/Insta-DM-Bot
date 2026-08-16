@@ -15,6 +15,9 @@ No AI is included in v1. The matcher is deterministic and isolated in `src/keywo
 - Receives Instagram `comments` webhook events.
 - Matches configured keywords case-insensitively.
 - Sends one private reply DM through Meta's Instagram Messaging private reply API.
+- Optionally sends public replies to high-fit comments using configurable quality, philosophy, probability, and daily cap rules.
+- Optionally hides or deletes harmful, hateful, spammy, or business-risk comments before any engagement automation runs.
+- Optionally receives incoming Instagram DM webhooks and sends randomized, non-repeating template replies by trigger.
 - Dedupes by Instagram comment ID so Meta webhook retries do not send duplicate DMs.
 - Logs timestamp, media ID, comment ID, keyword, delivery status, and Meta response.
 - Verifies `X-Hub-Signature-256` with your Meta app secret.
@@ -25,6 +28,11 @@ No AI is included in v1. The matcher is deterministic and isolated in `src/keywo
 This implementation uses the current Instagram Platform API model documented by Meta for Instagram professional accounts:
 
 - Private replies endpoint: `POST https://graph.instagram.com/{api-version}/{ig-user-id}/messages`
+- Public comment reply endpoint: `POST https://graph.instagram.com/{api-version}/{ig-comment-id}/replies`
+- Comment moderation endpoints:
+  - Hide: `POST https://graph.instagram.com/{api-version}/{ig-comment-id}?hide=true`
+  - Delete: `DELETE https://graph.instagram.com/{api-version}/{ig-comment-id}`
+- Incoming DM reply endpoint: `POST https://graph.instagram.com/{api-version}/{ig-user-id}/messages` with `recipient.id`
 - Private reply request body:
 
 ```json
@@ -39,7 +47,10 @@ This implementation uses the current Instagram Platform API model documented by 
 ```
 
 - Webhook object: `instagram`
-- Webhook field: `comments`
+- Webhook fields used by this app:
+  - `comments` for comment automation and moderation
+  - `messages` for incoming DM autoresponse
+  - `messaging_postbacks` if you later use icebreakers/buttons
 - Signature header: `X-Hub-Signature-256`
 
 The default `META_API_VERSION` is `v25.0`, which Meta's 2026 Instagram Platform/Postman documentation and Graph API release material list for 2026 examples. Keep this pinned and update it deliberately after checking your Meta app dashboard and the Meta Graph API changelog.
@@ -86,6 +97,156 @@ VERIFY_META_SIGNATURES=true
 KEYWORD_RESPONSES_JSON={"GUIDE":"Hey! Here's the guide: https://example.com/guide","BOT":"Here's the chatbot: https://example.com/bot","GLOWUP":"Here's the glow-up page: https://example.com/glowup"}
 ```
 
+## Automation Controls
+
+### 1. Private DM after keyword comment
+
+Configured by `KEYWORD_RESPONSES_JSON`.
+
+Example:
+
+```json
+{
+  "GUIDE": "Hey! Here's the guide: https://example.com/guide",
+  "BOT": "Here's the chatbot: https://example.com/bot"
+}
+```
+
+This sends a private reply DM tied to the comment. It does not create an open-ended conversation unless the user replies and Meta's messaging window allows a response.
+
+### 2. Public comment replies
+
+Turn on:
+
+```bash
+PUBLIC_REPLIES_ENABLED=true
+```
+
+Configured by `PUBLIC_REPLY_RULES_JSON`.
+
+Each rule can control:
+
+- `philosophyKeywords`: topics aligned with your worldview or brand.
+- `excludeKeywords`: terms that should block a public reply.
+- `minLength` / `maxLength`: avoid replying to low-effort or huge comments.
+- `requirePositiveSignal`: prefer comments that appear constructive.
+- `minScore`: raise this to be more selective.
+- `probability`: reply to only a fraction of matching comments.
+- `maxRepliesPerMediaPerDay`: avoid spamming one post.
+- `maxRepliesGlobalPerDay`: global safety cap.
+- `templates`: randomized public replies.
+
+Example:
+
+```json
+[
+  {
+    "id": "high-intent-brand-fit",
+    "enabled": true,
+    "templates": [
+      "Appreciate this. That is exactly the kind of question worth asking.",
+      "Yes - this is the direction I think more people should be looking at.",
+      "Strong point. This is the part most people skip."
+    ],
+    "philosophyKeywords": ["clarity", "discipline", "systems", "growth", "business", "automation"],
+    "excludeKeywords": ["cheap", "scam", "fake", "dm me", "promo"],
+    "minLength": 25,
+    "maxLength": 280,
+    "requirePositiveSignal": true,
+    "minScore": 3,
+    "probability": 0.35,
+    "maxRepliesPerMediaPerDay": 8,
+    "maxRepliesGlobalPerDay": 35
+  }
+]
+```
+
+The first version is deterministic and conservative. It is not AI. It does not truly know your philosophy yet; it approximates it through explicit rules that can be tuned after you see logs.
+
+### 3. Comment moderation
+
+Turn on:
+
+```bash
+MODERATION_ENABLED=true
+```
+
+Configured by `MODERATION_RULES_JSON`.
+
+Each rule can `delete`, `hide`, or do nothing. Moderation runs before any private DM or public reply. That means harmful comments are removed or hidden and never receive engagement.
+
+Use `delete` only for high-confidence categories such as threats, hateful slurs, and harassment. Use `hide` for business-risk content such as spam, scams, solicitation, or low-confidence brand safety terms.
+
+Example:
+
+```json
+[
+  {
+    "id": "hate-harassment-threats",
+    "enabled": true,
+    "action": "delete",
+    "reason": "Hateful, harassing, or threatening language",
+    "keywords": ["kill yourself", "kys", "go die"]
+  },
+  {
+    "id": "business-risk-spam",
+    "enabled": true,
+    "action": "hide",
+    "reason": "Spam or bad-for-business solicitation",
+    "keywords": ["buy followers", "crypto giveaway", "dm for promo", "telegram me"]
+  }
+]
+```
+
+Meta-supported comment moderation actions available here:
+
+- Reply publicly to a comment.
+- Hide or unhide a comment.
+- Delete a comment.
+- Read comments and replies.
+
+### 4. Incoming DM autoresponder
+
+Turn on:
+
+```bash
+DM_AUTORESPONDER_ENABLED=true
+```
+
+Configured by `DM_AUTORESPONSES_JSON`.
+
+Each rule can control:
+
+- `anyKeywords`: message text that triggers the rule.
+- `excludeKeywords`: message text that blocks the rule.
+- `maxRepliesPerSenderPerDay`: cap responses per person.
+- `cooldownSeconds`: avoid rapid repeated replies.
+- `templates`: randomized responses.
+
+The app remembers which templates each sender has already received for each rule. If all templates for that sender/rule have been used, it does not repeat one.
+
+Example:
+
+```json
+[
+  {
+    "id": "pricing",
+    "enabled": true,
+    "anyKeywords": ["price", "pricing", "cost", "how much"],
+    "excludeKeywords": ["refund", "angry", "scam"],
+    "maxRepliesPerSenderPerDay": 2,
+    "cooldownSeconds": 3600,
+    "templates": [
+      "I can help with that. The best starting point is here: https://example.com/pricing",
+      "Good question. Pricing depends on the setup, but this page gives the clean overview: https://example.com/pricing",
+      "Here is the pricing overview: https://example.com/pricing - send me one detail about what you need and I can point you better."
+    ]
+  }
+]
+```
+
+Meta messaging rules still apply. In practice, your app should only respond where Meta allows business messaging, usually when the user initiated the conversation or is inside the allowed response window.
+
 Run locally:
 
 ```bash
@@ -118,7 +279,8 @@ Use this checklist in Meta for Developers.
    - Permissions for private replies to comments:
      - `instagram_business_basic`
      - `instagram_business_manage_comments`
-   - For general message send/receive functionality beyond private replies, Meta documents `instagram_business_manage_messages`; this v1 private-reply flow does not send arbitrary DMs and uses `recipient.comment_id`.
+   - For public comment replies, hiding, and deleting comments, use comment management permissions.
+   - For incoming DM autoresponse, Meta documents `instagram_business_manage_messages`.
 
 4. If using Facebook Login for Business instead:
    - Host: `graph.facebook.com`
@@ -134,6 +296,8 @@ Use this checklist in Meta for Developers.
    - Callback URL: `https://your-domain.com/webhook`
    - Verify token: exactly the same string as `META_VERIFY_TOKEN`
    - Subscribe to the Instagram `comments` field.
+   - Subscribe to `messages` for incoming DM autoresponse.
+   - Subscribe to `messaging_postbacks` if you later add icebreakers, quick replies, or CTA button payload routing.
    - Subscribe to `live_comments` only if you want Live comments. This bot does not need it for posts/reels.
 
 6. Verification challenge.
@@ -265,3 +429,5 @@ src/
 - Private replies must be sent within Meta's allowed window. Meta documents 7 days for post/reel/story comments and only during the broadcast for Instagram Live.
 - Follow-up messages are only allowed if the recipient responds and must follow Meta's messaging window rules.
 - This app processes webhooks synchronously. Keep response text short and hosting latency low.
+- File-backed caps and dedupe are intended for one server instance. Use Redis/Upstash for multi-instance or serverless deployment.
+- Comment like/reaction automation is not implemented. I did not find a current official Meta endpoint in the verified docs used for this build; add it only after confirming the exact endpoint, permission, and API version in Meta's official docs/app dashboard.

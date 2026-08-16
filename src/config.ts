@@ -1,5 +1,11 @@
 import "dotenv/config";
-import type { AppConfig, KeywordResponses } from "./types.js";
+import type {
+  AppConfig,
+  DmAutoResponseRule,
+  KeywordResponses,
+  ModerationRule,
+  PublicReplyRule
+} from "./types.js";
 
 function readRequired(name: string): string {
   const value = process.env[name];
@@ -44,6 +50,18 @@ function readKeywordResponses(): KeywordResponses {
   return responses;
 }
 
+function readJsonArray<T>(name: string, fallback: T[]): T[] {
+  const raw = process.env[name];
+  if (!raw || raw.trim() === "") return fallback;
+
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${name} must be a JSON array`);
+  }
+
+  return parsed as T[];
+}
+
 export function loadConfig(): AppConfig {
   return {
     port: Number(process.env.PORT ?? 3000),
@@ -55,6 +73,12 @@ export function loadConfig(): AppConfig {
     metaApiVersion: process.env.META_API_VERSION ?? "v25.0",
     verifyMetaSignatures: readBoolean("VERIFY_META_SIGNATURES", true),
     keywordResponses: readKeywordResponses(),
+    publicReplyRules: readJsonArray<PublicReplyRule>("PUBLIC_REPLY_RULES_JSON", []),
+    moderationRules: readJsonArray<ModerationRule>("MODERATION_RULES_JSON", []),
+    dmAutoResponseRules: readJsonArray<DmAutoResponseRule>("DM_AUTORESPONSES_JSON", []),
+    publicRepliesEnabled: readBoolean("PUBLIC_REPLIES_ENABLED", false),
+    moderationEnabled: readBoolean("MODERATION_ENABLED", true),
+    dmAutoResponderEnabled: readBoolean("DM_AUTORESPONDER_ENABLED", false),
     dedupeStorePath: process.env.DEDUPE_STORE_PATH ?? "data/processed-comments.json",
     eventLogPath: process.env.EVENT_LOG_PATH ?? "data/events.jsonl"
   };
