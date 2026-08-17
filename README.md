@@ -5,7 +5,7 @@ Minimal Instagram comment-to-DM automation using Meta's official Instagram Platf
 Flow:
 
 ```text
-Instagram comment -> Meta webhook -> Express /webhook -> keyword matcher -> private reply DM
+Instagram comment/DM -> one Meta app webhook -> Express /webhook -> route by IG account ID -> that account's rules -> Meta action
 ```
 
 No AI is included in v1. The matcher is deterministic and isolated in `src/keywordMatcher.ts` so it can later be replaced with an agent.
@@ -13,6 +13,8 @@ No AI is included in v1. The matcher is deterministic and isolated in `src/keywo
 ## What It Does
 
 - Receives Instagram `comments` webhook events.
+- Receives webhook events for multiple Instagram Professional accounts from one Meta Developer app.
+- Routes each event by the Instagram account ID in the webhook payload.
 - Matches configured keywords case-insensitively.
 - Sends one private reply DM through Meta's Instagram Messaging private reply API.
 - Optionally sends public replies to high-fit comments using configurable quality, philosophy, probability, and daily cap rules.
@@ -67,8 +69,8 @@ Meta docs to verify against before production:
 ## Requirements
 
 - Node.js 20+
-- Instagram Professional account: Business or Creator
-- Meta Developer app
+- One or more Instagram Professional accounts: Business or Creator
+- One Meta Developer app
 - Public HTTPS URL for the webhook
 
 ## Setup
@@ -90,18 +92,44 @@ Edit `.env`:
 ```bash
 META_APP_SECRET=your_meta_app_secret
 META_VERIFY_TOKEN=make_a_long_random_string
-META_ACCESS_TOKEN=your_instagram_user_or_page_access_token
-META_IG_USER_ID=your_instagram_professional_account_id
 META_API_VERSION=v25.0
 VERIFY_META_SIGNATURES=true
-KEYWORD_RESPONSES_JSON={"GUIDE":"Hey! Here's the guide: https://example.com/guide","BOT":"Here's the chatbot: https://example.com/bot","GLOWUP":"Here's the glow-up page: https://example.com/glowup"}
+INSTAGRAM_ACCOUNTS_JSON=[{"id":"brand-a","displayName":"Brand A","metaIgUserId":"17841400000000000","metaAccessToken":"token_for_brand_a","keywordResponses":{"GUIDE":"Hey! Here's the guide: https://example.com/a-guide"},"publicRepliesEnabled":false,"publicReplyRules":[],"moderationEnabled":true,"moderationRules":[],"dmAutoResponderEnabled":false,"dmAutoResponseRules":[]},{"id":"brand-b","displayName":"Brand B","metaIgUserId":"17841411111111111","metaAccessToken":"token_for_brand_b","keywordResponses":{"GUIDE":"Hey! Here's the guide: https://example.com/b-guide"},"publicRepliesEnabled":false,"publicReplyRules":[],"moderationEnabled":true,"moderationRules":[],"dmAutoResponderEnabled":false,"dmAutoResponseRules":[]}]
 ```
+
+`META_APP_SECRET`, `META_VERIFY_TOKEN`, and `META_API_VERSION` are global because they belong to the one Meta app. `metaIgUserId`, `metaAccessToken`, and all automation rules live inside each account object.
+
+For local development, the app still supports the old single-account env variables as a fallback. For production with two accounts, use `INSTAGRAM_ACCOUNTS_JSON`.
+
+## Multi-Account Routing
+
+The app expects one Meta app and one webhook URL:
+
+```text
+https://your-domain.com/webhook
+```
+
+Meta includes the Instagram Professional account ID on webhook entries. The app looks that ID up in `INSTAGRAM_ACCOUNTS_JSON`:
+
+```text
+entry.id -> accountsByIgUserId[entry.id] -> Brand A or Brand B rules/token
+```
+
+That means each IG account can have separate:
+
+- access token
+- keyword DM replies
+- public reply rules
+- moderation rules
+- DM autoresponder rules
+- daily caps
+- logs and dedupe keys
 
 ## Automation Controls
 
 ### 1. Private DM after keyword comment
 
-Configured by `KEYWORD_RESPONSES_JSON`.
+Configured by each account's `keywordResponses`.
 
 Example:
 
@@ -116,13 +144,13 @@ This sends a private reply DM tied to the comment. It does not create an open-en
 
 ### 2. Public comment replies
 
-Turn on:
+Turn on inside the relevant account:
 
-```bash
-PUBLIC_REPLIES_ENABLED=true
+```json
+"publicRepliesEnabled": true
 ```
 
-Configured by `PUBLIC_REPLY_RULES_JSON`.
+Configured by that account's `publicReplyRules`.
 
 Each rule can control:
 
@@ -165,13 +193,13 @@ The first version is deterministic and conservative. It is not AI. It does not t
 
 ### 3. Comment moderation
 
-Turn on:
+Turn on inside the relevant account:
 
-```bash
-MODERATION_ENABLED=true
+```json
+"moderationEnabled": true
 ```
 
-Configured by `MODERATION_RULES_JSON`.
+Configured by that account's `moderationRules`.
 
 Each rule can `delete`, `hide`, or do nothing. Moderation runs before any private DM or public reply. That means harmful comments are removed or hidden and never receive engagement.
 
@@ -207,13 +235,13 @@ Meta-supported comment moderation actions available here:
 
 ### 4. Incoming DM autoresponder
 
-Turn on:
+Turn on inside the relevant account:
 
-```bash
-DM_AUTORESPONDER_ENABLED=true
+```json
+"dmAutoResponderEnabled": true
 ```
 
-Configured by `DM_AUTORESPONSES_JSON`.
+Configured by that account's `dmAutoResponseRules`.
 
 Each rule can control:
 
@@ -267,10 +295,11 @@ Use this checklist in Meta for Developers.
    - Use a Business app/app type that supports Instagram Platform products.
    - Add the Instagram product/API setup and Webhooks product.
 
-2. Connect your Instagram Professional account.
-   - Your Instagram account must be Business or Creator.
+2. Connect both Instagram Professional accounts to the same Meta app.
+   - Each Instagram account must be Business or Creator.
    - For the Instagram API with Instagram Login flow used by this project, Meta documents an Instagram User access token on `graph.instagram.com`; the private replies requirements table does not list a Facebook Page access token.
    - If you choose the Facebook Login for Business path instead, Meta documents a Facebook Page access token flow and says the Professional Instagram account must be linked to a Facebook Page.
+   - Each account still needs its own Instagram account ID and usable access token in `INSTAGRAM_ACCOUNTS_JSON`.
 
 3. Choose one auth path.
    - Preferred for this project: Instagram API with Instagram Login / Business Login for Instagram.
@@ -311,7 +340,7 @@ Use this checklist in Meta for Developers.
 
 8. Development mode vs live mode.
    - In development mode, only app admins, developers, testers, and test assets can use the app.
-   - If the automation is only for your own Instagram account and your Meta user/account has the required role, you can test in development mode.
+   - If the automation is only for your own Instagram accounts and your Meta user/accounts have the required roles, you can test in development mode.
    - For use with accounts or users outside your app roles, switch to Live mode and complete App Review for any permissions that require Advanced Access.
 
 9. App Review.
@@ -336,6 +365,8 @@ The app uses file-backed persistence:
 
 This is intentionally small and works best on a single always-on instance such as Railway or Render with a persistent disk. For Vercel/serverless or multiple instances, replace `FileStore` with Redis/Upstash or another shared durable store; otherwise dedupe state can be lost between cold starts or split across instances.
 
+All stored keys are prefixed by the account `id`, so Brand A and Brand B do not share counters, dedupe state, or DM template history.
+
 ## Local Webhook Testing
 
 Verify the challenge endpoint:
@@ -359,7 +390,7 @@ curl -X POST "http://localhost:3000/webhook" \
     "object": "instagram",
     "entry": [
       {
-        "id": "17841400000000000",
+        "id": "replace_with_one_configured_metaIgUserId",
         "time": 1760000000000,
         "field": "comments",
         "value": {
@@ -417,6 +448,7 @@ src/
   keywordMatcher.ts   Deterministic case-insensitive keyword matcher
   metaClient.ts       Meta private reply API client and retry handling
   metaSignature.ts    X-Hub-Signature-256 verification
+  rulesEngine.ts      Public reply, moderation, and DM autoresponse rules
   server.ts           Express routes
   store.ts            File-backed dedupe and logs
   types.ts            Shared types

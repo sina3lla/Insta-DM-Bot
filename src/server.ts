@@ -13,12 +13,11 @@ import {
   findPublicReplyRule
 } from "./rulesEngine.js";
 import { FileStore } from "./store.js";
-import type { CommentEvent, DeliveryLog, InstagramWebhookPayload, MessageEvent } from "./types.js";
+import type { CommentEvent, DeliveryLog, InstagramAccountConfig, InstagramWebhookPayload, MessageEvent } from "./types.js";
 import { extractCommentEvents, extractMessageEvents } from "./webhookParser.js";
 
 const config = loadConfig();
 const store = new FileStore(config.dedupeStorePath, config.eventLogPath);
-const metaClient = new MetaClient(config);
 const app = express();
 
 function logEvent(event: Omit<DeliveryLog, "timestamp">): Promise<void> {
@@ -48,16 +47,49 @@ app.get("/webhook", (req: Request, res: Response) => {
   res.sendStatus(403);
 });
 
-async function processModeration(event: CommentEvent): Promise<boolean> {
-  if (!config.moderationEnabled) return false;
+function getAccountLogFields(account: InstagramAccountConfig): Pick<DeliveryLog, "accountId" | "accountName" | "igUserId"> {
+  return {
+    accountId: account.id,
+    accountName: account.displayName,
+    igUserId: account.metaIgUserId
+  };
+}
 
-  const rule = findModerationRule(event, config.moderationRules);
+function resolveAccountForComment(event: CommentEvent): InstagramAccountConfig | null {
+  if (event.igUserIdFromWebhook && config.accountsByIgUserId[event.igUserIdFromWebhook]) {
+    return config.accountsByIgUserId[event.igUserIdFromWebhook];
+  }
+
+  return null;
+}
+
+function resolveAccountForMessage(event: MessageEvent): InstagramAccountConfig | null {
+  if (event.igUserIdFromWebhook && config.accountsByIgUserId[event.igUserIdFromWebhook]) {
+    return config.accountsByIgUserId[event.igUserIdFromWebhook];
+  }
+
+  if (event.recipientId && config.accountsByIgUserId[event.recipientId]) {
+    return config.accountsByIgUserId[event.recipientId];
+  }
+
+  return null;
+}
+
+function createMetaClient(account: InstagramAccountConfig): MetaClient {
+  return new MetaClient(config.metaApiVersion, account);
+}
+
+async function processModeration(account: InstagramAccountConfig, event: CommentEvent): Promise<boolean> {
+  if (!account.moderationEnabled) return false;
+
+  const rule = findModerationRule(event, account.moderationRules);
   if (!rule) return false;
 
-  const actionKey = `moderation:${rule.action}:${event.commentId}`;
+  const actionKey = `${account.id}:moderation:${rule.action}:${event.commentId}`;
   const claimed = await store.claimAction(actionKey, { mediaId: event.mediaId, keyword: rule.id });
   if (!claimed) {
     await logEvent({
+      ...getAccountLogFields(account),
       action: rule.action === "delete" ? "moderation_delete" : "moderation_hide",
       mediaId: event.mediaId,
       commentId: event.commentId,
@@ -70,10 +102,12 @@ async function processModeration(event: CommentEvent): Promise<boolean> {
   }
 
   try {
+    const metaClient = createMetaClient(account);
     const result = rule.action === "delete" ? await metaClient.deleteComment(event.commentId) : await metaClient.hideComment(event.commentId);
     if (result.ok) {
       await store.markActionSent(actionKey);
       await logEvent({
+        ...getAccountLogFields(account),
         action: rule.action === "delete" ? "moderation_delete" : "moderation_hide",
         mediaId: event.mediaId,
         commentId: event.commentId,
@@ -87,6 +121,7 @@ async function processModeration(event: CommentEvent): Promise<boolean> {
     } else {
       await store.markActionFailed(actionKey, JSON.stringify(result.body));
       await logEvent({
+        ...getAccountLogFields(account),
         action: rule.action === "delete" ? "moderation_delete" : "moderation_hide",
         mediaId: event.mediaId,
         commentId: event.commentId,
@@ -102,6 +137,7 @@ async function processModeration(event: CommentEvent): Promise<boolean> {
     const message = error instanceof Error ? error.message : "Unknown error";
     await store.markActionFailed(actionKey, message);
     await logEvent({
+      ...getAccountLogFields(account),
       action: rule.action === "delete" ? "moderation_delete" : "moderation_hide",
       mediaId: event.mediaId,
       commentId: event.commentId,
@@ -115,13 +151,15 @@ async function processModeration(event: CommentEvent): Promise<boolean> {
   return true;
 }
 
-async function processPrivateReply(event: CommentEvent): Promise<void> {
-  const match = findKeywordMatch(event.commentText, config.keywordResponses);
+async function processPrivateReply(account: InstagramAccountConfig, event: CommentEvent): Promise<void> {
+  const match = findKeywordMatch(event.commentText, account.keywordResponses);
   if (!match) return;
 
-  const claimed = await store.claimComment(event.commentId, event.mediaId, match.keyword);
+  const commentKey = `${account.id}:${event.commentId}`;
+  const claimed = await store.claimComment(commentKey, event.mediaId, match.keyword);
   if (!claimed) {
     await logEvent({
+      ...getAccountLogFields(account),
       action: "private_reply",
       mediaId: event.mediaId,
       commentId: event.commentId,
@@ -134,10 +172,12 @@ async function processPrivateReply(event: CommentEvent): Promise<void> {
   }
 
   try {
+    const metaClient = createMetaClient(account);
     const result = await metaClient.sendPrivateReply(event.commentId, match.responseText);
     if (result.ok) {
-      await store.markCommentSent(event.commentId);
+      await store.markCommentSent(commentKey);
       await logEvent({
+        ...getAccountLogFields(account),
         action: "private_reply",
         mediaId: event.mediaId,
         commentId: event.commentId,
@@ -148,8 +188,9 @@ async function processPrivateReply(event: CommentEvent): Promise<void> {
         metaResponse: result.body
       });
     } else {
-      await store.markCommentFailed(event.commentId, JSON.stringify(result.body));
+      await store.markCommentFailed(commentKey, JSON.stringify(result.body));
       await logEvent({
+        ...getAccountLogFields(account),
         action: "private_reply",
         mediaId: event.mediaId,
         commentId: event.commentId,
@@ -163,8 +204,9 @@ async function processPrivateReply(event: CommentEvent): Promise<void> {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    await store.markCommentFailed(event.commentId, message);
+    await store.markCommentFailed(commentKey, message);
     await logEvent({
+      ...getAccountLogFields(account),
       action: "private_reply",
       mediaId: event.mediaId,
       commentId: event.commentId,
@@ -176,12 +218,13 @@ async function processPrivateReply(event: CommentEvent): Promise<void> {
   }
 }
 
-async function processPublicReply(event: CommentEvent): Promise<void> {
-  if (!config.publicRepliesEnabled) return;
+async function processPublicReply(account: InstagramAccountConfig, event: CommentEvent): Promise<void> {
+  if (!account.publicRepliesEnabled) return;
 
-  const rule = findPublicReplyRule(event, config.publicReplyRules);
+  const rule = findPublicReplyRule(event, account.publicReplyRules);
   if (!rule) {
     await logEvent({
+      ...getAccountLogFields(account),
       action: "public_reply",
       mediaId: event.mediaId,
       commentId: event.commentId,
@@ -193,11 +236,12 @@ async function processPublicReply(event: CommentEvent): Promise<void> {
   }
 
   const today = dateKey();
-  const globalCounterKey = `public_reply:${rule.id}:${today}:global`;
-  const mediaCounterKey = `public_reply:${rule.id}:${today}:media:${event.mediaId ?? "unknown"}`;
+  const globalCounterKey = `${account.id}:public_reply:${rule.id}:${today}:global`;
+  const mediaCounterKey = `${account.id}:public_reply:${rule.id}:${today}:media:${event.mediaId ?? "unknown"}`;
 
   if (rule.maxRepliesGlobalPerDay !== undefined && (await store.getCounter(globalCounterKey)) >= rule.maxRepliesGlobalPerDay) {
     await logEvent({
+      ...getAccountLogFields(account),
       action: "public_reply",
       mediaId: event.mediaId,
       commentId: event.commentId,
@@ -211,6 +255,7 @@ async function processPublicReply(event: CommentEvent): Promise<void> {
 
   if (rule.maxRepliesPerMediaPerDay !== undefined && (await store.getCounter(mediaCounterKey)) >= rule.maxRepliesPerMediaPerDay) {
     await logEvent({
+      ...getAccountLogFields(account),
       action: "public_reply",
       mediaId: event.mediaId,
       commentId: event.commentId,
@@ -222,10 +267,11 @@ async function processPublicReply(event: CommentEvent): Promise<void> {
     return;
   }
 
-  const actionKey = `public_reply:${event.commentId}`;
+  const actionKey = `${account.id}:public_reply:${event.commentId}`;
   const claimed = await store.claimAction(actionKey, { mediaId: event.mediaId, keyword: rule.id });
   if (!claimed) {
     await logEvent({
+      ...getAccountLogFields(account),
       action: "public_reply",
       mediaId: event.mediaId,
       commentId: event.commentId,
@@ -240,12 +286,14 @@ async function processPublicReply(event: CommentEvent): Promise<void> {
   const message = choosePublicReplyTemplate(rule, event.commentId);
 
   try {
+    const metaClient = createMetaClient(account);
     const result = await metaClient.replyToComment(event.commentId, message);
     if (result.ok) {
       await store.markActionSent(actionKey);
       await store.incrementCounter(globalCounterKey);
       await store.incrementCounter(mediaCounterKey);
       await logEvent({
+        ...getAccountLogFields(account),
         action: "public_reply",
         mediaId: event.mediaId,
         commentId: event.commentId,
@@ -258,6 +306,7 @@ async function processPublicReply(event: CommentEvent): Promise<void> {
     } else {
       await store.markActionFailed(actionKey, JSON.stringify(result.body));
       await logEvent({
+        ...getAccountLogFields(account),
         action: "public_reply",
         mediaId: event.mediaId,
         commentId: event.commentId,
@@ -273,6 +322,7 @@ async function processPublicReply(event: CommentEvent): Promise<void> {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await store.markActionFailed(actionKey, errorMessage);
     await logEvent({
+      ...getAccountLogFields(account),
       action: "public_reply",
       mediaId: event.mediaId,
       commentId: event.commentId,
@@ -284,12 +334,13 @@ async function processPublicReply(event: CommentEvent): Promise<void> {
   }
 }
 
-async function processDmAutoResponse(event: MessageEvent): Promise<void> {
-  if (!config.dmAutoResponderEnabled) return;
+async function processDmAutoResponse(account: InstagramAccountConfig, event: MessageEvent): Promise<void> {
+  if (!account.dmAutoResponderEnabled) return;
 
-  const rule = findDmAutoResponseRule(event, config.dmAutoResponseRules);
+  const rule = findDmAutoResponseRule(event, account.dmAutoResponseRules);
   if (!rule) {
     await logEvent({
+      ...getAccountLogFields(account),
       action: "dm_autoreply",
       messageId: event.messageId,
       senderId: event.senderId,
@@ -301,9 +352,11 @@ async function processDmAutoResponse(event: MessageEvent): Promise<void> {
   }
 
   const today = dateKey();
-  const senderCounterKey = `dm_autoreply:${rule.id}:${today}:sender:${event.senderId}`;
+  const senderStoreKey = `${account.id}:${event.senderId}`;
+  const senderCounterKey = `${account.id}:dm_autoreply:${rule.id}:${today}:sender:${event.senderId}`;
   if (rule.maxRepliesPerSenderPerDay !== undefined && (await store.getCounter(senderCounterKey)) >= rule.maxRepliesPerSenderPerDay) {
     await logEvent({
+      ...getAccountLogFields(account),
       action: "dm_autoreply",
       messageId: event.messageId,
       senderId: event.senderId,
@@ -315,11 +368,12 @@ async function processDmAutoResponse(event: MessageEvent): Promise<void> {
     return;
   }
 
-  const lastSentAt = await store.getSenderRuleLastSentAt(event.senderId, rule.id);
+  const lastSentAt = await store.getSenderRuleLastSentAt(senderStoreKey, rule.id);
   if (lastSentAt && rule.cooldownSeconds !== undefined) {
     const elapsedSeconds = (Date.now() - Date.parse(lastSentAt)) / 1000;
     if (elapsedSeconds < rule.cooldownSeconds) {
       await logEvent({
+        ...getAccountLogFields(account),
         action: "dm_autoreply",
         messageId: event.messageId,
         senderId: event.senderId,
@@ -332,10 +386,11 @@ async function processDmAutoResponse(event: MessageEvent): Promise<void> {
     }
   }
 
-  const actionKey = `dm_autoreply:${event.messageId}`;
+  const actionKey = `${account.id}:dm_autoreply:${event.messageId}`;
   const claimed = await store.claimAction(actionKey, { keyword: rule.id });
   if (!claimed) {
     await logEvent({
+      ...getAccountLogFields(account),
       action: "dm_autoreply",
       messageId: event.messageId,
       senderId: event.senderId,
@@ -347,11 +402,12 @@ async function processDmAutoResponse(event: MessageEvent): Promise<void> {
     return;
   }
 
-  const usedTemplates = await store.getSenderTemplateHistory(event.senderId, rule.id);
+  const usedTemplates = await store.getSenderTemplateHistory(senderStoreKey, rule.id);
   const message = chooseUnusedDmTemplate(rule, event.senderId, usedTemplates);
   if (!message) {
     await store.markActionSent(actionKey);
     await logEvent({
+      ...getAccountLogFields(account),
       action: "dm_autoreply",
       messageId: event.messageId,
       senderId: event.senderId,
@@ -364,13 +420,15 @@ async function processDmAutoResponse(event: MessageEvent): Promise<void> {
   }
 
   try {
+    const metaClient = createMetaClient(account);
     const result = await metaClient.sendMessage(event.senderId, message);
     if (result.ok) {
       await store.markActionSent(actionKey);
       await store.incrementCounter(senderCounterKey);
-      await store.rememberSenderTemplate(event.senderId, rule.id, message);
-      await store.rememberSenderRuleSent(event.senderId, rule.id);
+      await store.rememberSenderTemplate(senderStoreKey, rule.id, message);
+      await store.rememberSenderRuleSent(senderStoreKey, rule.id);
       await logEvent({
+        ...getAccountLogFields(account),
         action: "dm_autoreply",
         messageId: event.messageId,
         senderId: event.senderId,
@@ -383,6 +441,7 @@ async function processDmAutoResponse(event: MessageEvent): Promise<void> {
     } else {
       await store.markActionFailed(actionKey, JSON.stringify(result.body));
       await logEvent({
+        ...getAccountLogFields(account),
         action: "dm_autoreply",
         messageId: event.messageId,
         senderId: event.senderId,
@@ -398,6 +457,7 @@ async function processDmAutoResponse(event: MessageEvent): Promise<void> {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await store.markActionFailed(actionKey, errorMessage);
     await logEvent({
+      ...getAccountLogFields(account),
       action: "dm_autoreply",
       messageId: event.messageId,
       senderId: event.senderId,
@@ -436,15 +496,39 @@ app.post("/webhook", express.raw({ type: "application/json", limit: "1mb" }), as
   const messageEvents = extractMessageEvents(payload);
 
   for (const event of commentEvents) {
-    const moderated = await processModeration(event);
+    const account = resolveAccountForComment(event);
+    if (!account) {
+      await logEvent({
+        igUserId: event.igUserIdFromWebhook,
+        mediaId: event.mediaId,
+        commentId: event.commentId,
+        status: "ignored",
+        reason: "No configured Instagram account matched webhook entry ID"
+      });
+      continue;
+    }
+
+    const moderated = await processModeration(account, event);
     if (moderated) continue;
 
-    await processPrivateReply(event);
-    await processPublicReply(event);
+    await processPrivateReply(account, event);
+    await processPublicReply(account, event);
   }
 
   for (const event of messageEvents) {
-    await processDmAutoResponse(event);
+    const account = resolveAccountForMessage(event);
+    if (!account) {
+      await logEvent({
+        igUserId: event.igUserIdFromWebhook ?? event.recipientId,
+        messageId: event.messageId,
+        senderId: event.senderId,
+        status: "ignored",
+        reason: "No configured Instagram account matched webhook message recipient"
+      });
+      continue;
+    }
+
+    await processDmAutoResponse(account, event);
   }
 
   res.status(200).json({ received: true, comments: commentEvents.length, messages: messageEvents.length });
@@ -453,5 +537,5 @@ app.post("/webhook", express.raw({ type: "application/json", limit: "1mb" }), as
 await store.init();
 
 app.listen(config.port, () => {
-  console.log(`Instagram DM bot listening on port ${config.port}`);
+  console.log(`Instagram automation bot listening on port ${config.port} for ${config.accounts.length} account(s)`);
 });

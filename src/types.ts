@@ -39,15 +39,11 @@ export type DmAutoResponseRule = {
   cooldownSeconds?: number;
 };
 
-export type AppConfig = {
-  port: number;
-  nodeEnv: string;
-  metaAppSecret: string;
-  metaVerifyToken: string;
-  metaAccessToken: string;
+export type InstagramAccountConfig = {
+  id: string;
+  displayName: string;
   metaIgUserId: string;
-  metaApiVersion: string;
-  verifyMetaSignatures: boolean;
+  metaAccessToken: string;
   keywordResponses: KeywordResponses;
   publicReplyRules: PublicReplyRule[];
   moderationRules: ModerationRule[];
@@ -55,6 +51,17 @@ export type AppConfig = {
   publicRepliesEnabled: boolean;
   moderationEnabled: boolean;
   dmAutoResponderEnabled: boolean;
+};
+
+export type AppConfig = {
+  port: number;
+  nodeEnv: string;
+  metaAppSecret: string;
+  metaVerifyToken: string;
+  metaApiVersion: string;
+  verifyMetaSignatures: boolean;
+  accounts: InstagramAccountConfig[];
+  accountsByIgUserId: Record<string, InstagramAccountConfig>;
   dedupeStorePath: string;
   eventLogPath: string;
 };
@@ -71,8 +78,8 @@ export type InstagramWebhookEntry = {
   value?: InstagramCommentWebhookValue;
   changes?: Array<{
     field?: string;
-      value?: InstagramCommentWebhookValue;
-    }>;
+    value?: InstagramCommentWebhookValue;
+  }>;
   messaging?: InstagramMessagingWebhookValue[];
 };
 
@@ -140,6 +147,9 @@ export type KeywordMatch = {
 
 export type DeliveryLog = {
   timestamp: string;
+  accountId?: string;
+  accountName?: string;
+  igUserId?: string;
   mediaId?: string;
   commentId?: string;
   messageId?: string;

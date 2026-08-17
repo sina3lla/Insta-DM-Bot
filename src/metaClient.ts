@@ -1,4 +1,4 @@
-import type { AppConfig } from "./types.js";
+import type { InstagramAccountConfig } from "./types.js";
 
 type MetaApiErrorBody = {
   error?: {
@@ -54,7 +54,10 @@ function isRetryable(status: number, body: unknown): boolean {
 }
 
 export class MetaClient {
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly apiVersion: string,
+    private readonly account: InstagramAccountConfig
+  ) {}
 
   private async sendJson(url: URL, body: unknown): Promise<MetaSendResult> {
     const maxAttempts = 4;
@@ -64,7 +67,7 @@ export class MetaClient {
         response = await fetch(url, {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${this.config.metaAccessToken}`,
+            Authorization: `Bearer ${this.account.metaAccessToken}`,
             "Content-Type": "application/json"
           },
           body: JSON.stringify(body)
@@ -107,9 +110,7 @@ export class MetaClient {
   }
 
   async sendPrivateReply(commentId: string, messageText: string): Promise<MetaSendResult> {
-    const url = new URL(
-      `https://graph.instagram.com/${this.config.metaApiVersion}/${this.config.metaIgUserId}/messages`
-    );
+    const url = new URL(`https://graph.instagram.com/${this.apiVersion}/${this.account.metaIgUserId}/messages`);
 
     return this.sendJson(url, {
       // Meta private replies use the comment ID as the recipient. This sends a DM to the commenter.
@@ -123,14 +124,12 @@ export class MetaClient {
   }
 
   async replyToComment(commentId: string, messageText: string): Promise<MetaSendResult> {
-    const url = new URL(`https://graph.instagram.com/${this.config.metaApiVersion}/${commentId}/replies`);
+    const url = new URL(`https://graph.instagram.com/${this.apiVersion}/${commentId}/replies`);
     return this.sendJson(url, { message: messageText });
   }
 
   async sendMessage(recipientId: string, messageText: string): Promise<MetaSendResult> {
-    const url = new URL(
-      `https://graph.instagram.com/${this.config.metaApiVersion}/${this.config.metaIgUserId}/messages`
-    );
+    const url = new URL(`https://graph.instagram.com/${this.apiVersion}/${this.account.metaIgUserId}/messages`);
 
     return this.sendJson(url, {
       recipient: {
@@ -144,13 +143,13 @@ export class MetaClient {
   }
 
   async hideComment(commentId: string): Promise<MetaSendResult> {
-    const url = new URL(`https://graph.instagram.com/${this.config.metaApiVersion}/${commentId}`);
+    const url = new URL(`https://graph.instagram.com/${this.apiVersion}/${commentId}`);
     url.searchParams.set("hide", "true");
     return this.sendJson(url, {});
   }
 
   async deleteComment(commentId: string): Promise<MetaSendResult> {
-    const url = new URL(`https://graph.instagram.com/${this.config.metaApiVersion}/${commentId}`);
+    const url = new URL(`https://graph.instagram.com/${this.apiVersion}/${commentId}`);
     const maxAttempts = 4;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -159,7 +158,7 @@ export class MetaClient {
         response = await fetch(url, {
           method: "DELETE",
           headers: {
-            Authorization: `Bearer ${this.config.metaAccessToken}`
+            Authorization: `Bearer ${this.account.metaAccessToken}`
           }
         });
       } catch (error) {
