@@ -12,7 +12,7 @@ No Node.js, TypeScript, Composer, database, queue, or background worker is requi
 
 ## What It Does
 
-- Receives Instagram webhook events at `/webhook`.
+- Receives Instagram webhook events at `/instagram-bot/webhook`.
 - Handles multiple Instagram Professional accounts from one Meta app.
 - Routes events by the Instagram account ID in the webhook payload.
 - Sends private DM replies when comments contain configured keywords.
@@ -29,7 +29,7 @@ No Node.js, TypeScript, Composer, database, queue, or background worker is requi
 - PHP 8.1+ recommended.
 - PHP cURL extension enabled.
 - Apache with `.htaccess` rewrite support.
-- Public HTTPS domain or subdomain.
+- Public HTTPS path: `https://selinabernard.com/instagram-bot/`.
 - One Meta Developer app.
 - One or more Instagram Business/Creator accounts.
 
@@ -48,16 +48,14 @@ app/
   store.php            File-backed dedupe/counters/template memory
   webhook_parser.php   Instagram webhook extraction
 public/
-  .htaccess            Routes /webhook and /health to index.php
+  .htaccess            Routes /instagram-bot/webhook and /instagram-bot/health to index.php
   index.php            Public entrypoint
 data/
   processed-comments.json
   events.jsonl
 ```
 
-Only `public/` should be web-accessible. Keep `app/`, `data/`, and `.env` outside the public document root when possible.
-
-The root `.htaccess` also blocks `app/`, `data/`, `.env`, and Git files as a fallback if the project root is accidentally exposed.
+This repo is configured for the practical Hetzner shared-hosting layout where the whole bot folder sits under `public_html/instagram-bot/`. The root `.htaccess` routes public traffic into `public/index.php` and blocks `app/`, `data/`, `.env`, `.env.example`, Git files, and the README from direct browser access.
 
 ## Configuration
 
@@ -73,6 +71,7 @@ Edit `.env`:
 META_APP_SECRET=your_meta_app_secret
 META_VERIFY_TOKEN=make_a_long_random_string
 META_API_VERSION=v25.0
+APP_BASE_PATH=/instagram-bot
 VERIFY_META_SIGNATURES=true
 INSTAGRAM_ACCOUNTS_JSON=[{"id":"brand-a","displayName":"Brand A","metaIgUserId":"17841400000000000","metaAccessToken":"token_for_brand_a","keywordResponses":{"GUIDE":"Hey! Here's the guide: https://example.com/a-guide"},"publicRepliesEnabled":false,"publicReplyRules":[],"moderationEnabled":true,"moderationRules":[],"dmAutoResponderEnabled":false,"dmAutoResponseRules":[]},{"id":"brand-b","displayName":"Brand B","metaIgUserId":"17841411111111111","metaAccessToken":"token_for_brand_b","keywordResponses":{"GUIDE":"Hey! Here's the guide: https://example.com/b-guide"},"publicRepliesEnabled":false,"publicReplyRules":[],"moderationEnabled":true,"moderationRules":[],"dmAutoResponderEnabled":false,"dmAutoResponseRules":[]}]
 DEDUPE_STORE_PATH=data/processed-comments.json
@@ -83,25 +82,34 @@ EVENT_LOG_PATH=data/events.jsonl
 
 ## Hetzner Webhosting M Deployment
 
-Use a subdomain such as:
+Target URLs:
 
 ```text
-igbot.yourdomain.com
+https://selinabernard.com/instagram-bot/health
+https://selinabernard.com/instagram-bot/webhook
 ```
 
-Upload the project so that:
+Recommended upload layout:
 
 ```text
-/home/.../insta-dm-bot/app
-/home/.../insta-dm-bot/data
-/home/.../insta-dm-bot/.env
-/home/.../insta-dm-bot/public
+/home/.../public_html/instagram-bot/.htaccess
+/home/.../public_html/instagram-bot/.env
+/home/.../public_html/instagram-bot/app/
+/home/.../public_html/instagram-bot/data/
+/home/.../public_html/instagram-bot/public/
 ```
 
-Then point the subdomain document root to:
+The public URLs still stay clean because the root `.htaccess` silently routes requests into `public/index.php`.
+
+The included access rules block these direct browser paths:
 
 ```text
-/home/.../insta-dm-bot/public
+https://selinabernard.com/instagram-bot/.env
+https://selinabernard.com/instagram-bot/.env.example
+https://selinabernard.com/instagram-bot/app/
+https://selinabernard.com/instagram-bot/data/
+https://selinabernard.com/instagram-bot/.git/
+https://selinabernard.com/instagram-bot/README.md
 ```
 
 Make sure `data/` is writable by PHP. The bot creates/updates:
@@ -111,14 +119,23 @@ data/processed-comments.json
 data/events.jsonl
 ```
 
-If Hetzner does not allow `.env` outside the document root in your setup, use hosting-level environment variables or Apache `SetEnv` values instead. Do not commit real secrets.
+Do not commit real secrets. Keep `.env` private and use the included access rules if it has to sit inside `/instagram-bot/`.
+
+After upload, test:
+
+```text
+https://selinabernard.com/instagram-bot/health should return JSON
+https://selinabernard.com/instagram-bot/.env should return 403 or be blocked
+https://selinabernard.com/instagram-bot/app/config.php should return 403 or be blocked
+https://selinabernard.com/instagram-bot/data/ should return 403 or be blocked
+```
 
 ## Meta Webhook Settings
 
 In Meta Developers, configure the Instagram webhook:
 
 ```text
-Callback URL: https://igbot.yourdomain.com/webhook
+Callback URL: https://selinabernard.com/instagram-bot/webhook
 Verify token: exactly the same value as META_VERIFY_TOKEN
 ```
 
@@ -141,13 +158,13 @@ php -S localhost:3000 -t public public/index.php
 Health check:
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:3000/instagram-bot/health
 ```
 
 Webhook challenge:
 
 ```bash
-curl "http://localhost:3000/webhook?hub.mode=subscribe&hub.verify_token=replace_with_any_random_verify_token&hub.challenge=CHALLENGE_ACCEPTED"
+curl "http://localhost:3000/instagram-bot/webhook?hub.mode=subscribe&hub.verify_token=replace_with_any_random_verify_token&hub.challenge=CHALLENGE_ACCEPTED"
 ```
 
 For unsigned local testing, set:
@@ -159,7 +176,7 @@ VERIFY_META_SIGNATURES=false
 Then send a sample comment:
 
 ```bash
-curl -X POST "http://localhost:3000/webhook" \
+curl -X POST "http://localhost:3000/instagram-bot/webhook" \
   -H "Content-Type: application/json" \
   -d '{
     "object": "instagram",

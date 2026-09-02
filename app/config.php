@@ -202,6 +202,7 @@ function load_config(): array
         'metaAppSecret' => env_string('META_APP_SECRET'),
         'metaVerifyToken' => env_string('META_VERIFY_TOKEN'),
         'metaApiVersion' => env_string('META_API_VERSION', 'v25.0'),
+        'basePath' => env_string('APP_BASE_PATH', '/instagram-bot'),
         'verifyMetaSignatures' => env_bool('VERIFY_META_SIGNATURES', true),
         'accounts' => $accounts,
         'accountsByIgUserId' => $accountsByIgUserId,

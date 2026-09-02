@@ -6,7 +6,8 @@
 !.env.example
 
 # Runtime persistence and logs
-data/
+data/*
+!data/.htaccess
 *.log
 
 # Old/generated local artifacts

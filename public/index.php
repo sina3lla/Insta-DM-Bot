@@ -19,11 +19,19 @@ function respond_text(int $status, string $body): never
     exit;
 }
 
-function request_path(): string
+function request_path(array $config): string
 {
     $uri = $_SERVER['REQUEST_URI'] ?? '/';
     $path = parse_url($uri, PHP_URL_PATH);
-    return is_string($path) ? rtrim($path, '/') ?: '/' : '/';
+    $path = is_string($path) ? rtrim($path, '/') ?: '/' : '/';
+    $basePath = rtrim((string) ($config['basePath'] ?? ''), '/');
+
+    if ($basePath !== '' && $basePath !== '/' && ($path === $basePath || str_starts_with($path, $basePath . '/'))) {
+        $path = substr($path, strlen($basePath)) ?: '/';
+        $path = rtrim($path, '/') ?: '/';
+    }
+
+    return $path;
 }
 
 try {
@@ -33,7 +41,7 @@ try {
 }
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-$path = request_path();
+$path = request_path($config);
 
 if ($path === '/health') {
     respond_json(200, ['ok' => true, 'accounts' => count($config['accounts'])]);
@@ -115,4 +123,3 @@ if ($path === '/webhook' && $method === 'POST') {
 }
 
 respond_json(404, ['error' => 'Not found']);
-
